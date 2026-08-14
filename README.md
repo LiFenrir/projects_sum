@@ -1,6 +1,6 @@
 # project_sum
 
-项目代码与配套笔记汇总备份(2026-08-14)。每个子目录是独立 git 仓库(已移除原远程链接),可分别推送到 GitHub 保管。
+项目代码与配套笔记汇总备份(2026-08-14)。
 
 ## 目录结构
 
@@ -23,7 +23,6 @@ project_sum/
 - **大文件已排除**:checkpoints、pretrained_models、weights、wandb、.venv、数据集、编译产物(`*.pt/*.pth/*.safetensors/*.mp4` 等)未包含在副本中
 - 各仓库已提交保存所有更改(最后一个 commit 为 `chore: 备份前保存未提交更改`)
 - 权重/数据恢复方式见各仓库 README 与 notes/ 中对应笔记
-- 许可注意:RISE 数据/checkpoint 为 CC BY-NC-SA 4.0;sam3 为 Meta  gated 权重;上传 GitHub 建议设为私有仓库
 
 ## 上传到 GitHub
 
