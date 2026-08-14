@@ -1,0 +1,57 @@
+# Stage 1: RL Token Encoder-Decoder Training
+# =============================================
+# Trains the information-bottleneck encoder-decoder that compresses
+# VLA prefix embeddings into a single RL token.
+#
+# Usage:
+#   # Single GPU:
+#   python scripts/train_rl_token.py --config configs/rlt/stage1_rl_token.yaml
+#
+#   # CLI overrides (nested fields use dot notation):
+#   python scripts/train_rl_token.py --config configs/rlt/stage1_rl_token.yaml \
+#       --train.training.vla-finetune-alpha 1.0
+
+# ── RL Token Trainer ────────────────────────────────────
+train:
+  arch:
+    embedding_dim: 2048
+    encoder_layers: 2
+    encoder_heads: 8
+    decoder_layers: 2
+    decoder_heads: 8
+
+  training:
+    num_train_steps: 5000
+    batch_size: 32
+    peak_lr: 1.0e-4
+    weight_decay: 1.0e-5
+    warmup_steps: 500
+    decay_steps: 5000
+    decay_lr: 1.0e-5
+    max_grad_norm: 1.0
+
+    # Joint training (set > 0 to fine-tune VLA alongside RL token)
+    vla_finetune_alpha: 0.0
+    vla_learning_rate: 1.0e-5
+    gradient_checkpointing: true
+
+  checkpoint:
+    vla_checkpoint_dir: ""
+    vla_config_name: configs/bi_s1/pi05_finetune.yaml
+    resume_checkpoint: ""
+    save_dir: checkpoints/rl_token
+    run_name: ""
+    save_every: 1000
+    log_every: 1
+    print_every: 100
+
+  wandb:
+    project: rlt-openpi
+    enabled: true
+
+# ── Dataset ─────────────────────────────────────────────
+repo_id: local/stack_the_blocks
+
+data_transforms_fn: null
+
+num_workers: 4

@@ -1,0 +1,46 @@
+# ReCap CFG SFT Training Configuration
+# Usage: torchrun --nproc_per_node=N scripts/recap/train_cfg_sft.py --config configs/recap/recap_cfg_sft.yaml
+
+model_path: "/path/to/pi05_base_pytorch"
+model_type: "pi05"
+precision: "bf16"
+
+train_data_paths:
+  - dataset_path: "/path/to/sft_dataset_with_advantages"
+    robot_type: "bi_s1"
+    camera_map:
+      front: "base_0_rgb"
+      left_wrist: "left_wrist_0_rgb"
+      right_wrist: "right_wrist_0_rgb"
+    action_dim: 14
+    type: "sft"
+    weight: 1.0
+
+advantage_tag: null
+balance_dataset_weights: true
+num_workers: 8
+seed: 42
+
+micro_batch_size: 32
+global_batch_size: 256
+max_steps: 30000
+save_interval: 3000
+val_check_interval: -1
+
+lr: 8.0e-6
+adam_beta1: 0.9
+adam_beta2: 0.95
+adam_eps: 1.0e-8
+weight_decay: 1.0e-10
+clip_grad: 1.0
+lr_scheduler: "cosine"
+lr_warmup_steps: 3000
+
+cfgrl_guidance_scale: 1.0
+unconditional_prob: 0.1
+guidance_type: "positive"
+positive_only_conditional: true
+
+log_every: 10
+save_dir: "./checkpoints/cfg_sft"
+run_name: "cfg_sft"

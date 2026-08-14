@@ -1,0 +1,161 @@
+import cv2
+import sys
+import argparse
+import numpy as np
+import torch
+from pathlib import Path
+from matplotlib import pyplot as plt
+from typing import Any, Dict, List
+from sam_segment import select_masks, ALL_MODEL_TYPES, DEFAULT_SAM3_CKPT
+from stable_diffusion_inpaint import replace_img_with_sd, DEFAULT_SD_INPAINT_MODEL
+from utils import load_img_to_array, save_array_to_img, dilate_mask, \
+    show_mask, show_points, get_clicked_point
+
+
+def setup_args(parser):
+    parser.add_argument(
+        "--input_img", type=str, required=True,
+        help="Path to a single input img",
+    )
+    parser.add_argument(
+        "--coords_type", type=str,
+        default="key_in", choices=["click", "key_in"], 
+        help="The way to select coords",
+    )
+    parser.add_argument(
+        "--point_coords", type=float, nargs='+', default=None,
+        help="The coordinate of the point prompt, [coord_W coord_H].",
+    )
+    parser.add_argument(
+        "--point_labels", type=int, nargs='+', default=None,
+        help="The labels of the point prompt, 1 or 0.",
+    )
+    parser.add_argument(
+        "--text_prompt", type=str, required=True,
+        help="Text prompt describing the background to generate",
+    )
+    parser.add_argument(
+        "--text_select", type=str, default=None,
+        help="SAM 3 only: pick the foreground to keep with a noun phrase "
+             "(e.g. 'the dog') instead of a point.",
+    )
+    parser.add_argument(
+        "--text_confidence", type=float, default=0.5,
+        help="Confidence threshold for --text_select. Default: 0.5",
+    )
+    parser.add_argument(
+        "--dilate_kernel_size", type=int, default=None,
+        help="Dilate kernel size. Default: None",
+    )
+    parser.add_argument(
+        "--output_dir", type=str, required=True,
+        help="Output path to the directory with results.",
+    )
+    parser.add_argument(
+        "--sam_model_type", type=str,
+        default="sam3", choices=list(ALL_MODEL_TYPES),
+        help="The type of sam model to load. Default: 'sam3'",
+    )
+    parser.add_argument(
+        "--sam_ckpt", type=str, default=DEFAULT_SAM3_CKPT,
+        help="The path to the SAM checkpoint to use for mask generation.",
+    )
+    parser.add_argument(
+        "--sd_model", type=str, default=None,
+        help=f"Diffusers inpainting model id. "
+             f"Default: {DEFAULT_SD_INPAINT_MODEL}",
+    )
+    parser.add_argument(
+        "--seed", type=int,
+        help="Specify seed for reproducibility.",
+    )
+    parser.add_argument(
+        "--deterministic", action="store_true",
+        help="Use deterministic algorithms for reproducibility.",
+    )
+
+
+
+if __name__ == "__main__":
+    """Example usage:
+    python replace_anything.py \
+        --input_img ./example/replace-anything/dog.png \
+        --coords_type key_in \
+        --point_coords 750 500 \
+        --point_labels 1 \
+        --text_prompt "sit on the swing" \
+        --output_dir ./results \
+        --sam_model_type "sam3" \
+        --sam_ckpt ./pretrained_models/sam3.pt
+
+    Or pick the foreground with a text phrase instead of a point (SAM 3 only):
+    python replace_anything.py \
+        --input_img ./example/replace-anything/dog.png \
+        --text_select "dog" \
+        --text_prompt "sit on the swing" \
+        --output_dir ./results
+    """
+    parser = argparse.ArgumentParser()
+    setup_args(parser)
+    args = parser.parse_args(sys.argv[1:])
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    latest_coords = None
+    if not args.text_select:
+        if args.coords_type == "click":
+            latest_coords = get_clicked_point(args.input_img)
+        elif args.coords_type == "key_in":
+            latest_coords = args.point_coords
+    img = load_img_to_array(args.input_img)
+
+    masks = select_masks(
+        img,
+        model_type=args.sam_model_type,
+        ckpt_p=args.sam_ckpt,
+        device=device,
+        point_coords=latest_coords,
+        point_labels=args.point_labels,
+        text_select=args.text_select,
+        text_confidence=args.text_confidence,
+    )
+
+    # dilate mask to avoid unmasked edge effect
+    if args.dilate_kernel_size is not None:
+        masks = [dilate_mask(mask, args.dilate_kernel_size) for mask in masks]
+
+    # visualize the segmentation results
+    img_stem = Path(args.input_img).stem
+    out_dir = Path(args.output_dir) / img_stem
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for idx, mask in enumerate(masks):
+        # path to the results
+        mask_p = out_dir / f"mask_{idx}.png"
+        img_points_p = out_dir / f"with_points.png"
+        img_mask_p = out_dir / f"with_{Path(mask_p).name}"
+
+        # save the mask
+        save_array_to_img(mask, mask_p)
+
+        # save the pointed and masked image
+        dpi = plt.rcParams['figure.dpi']
+        height, width = img.shape[:2]
+        plt.figure(figsize=(width/dpi/0.77, height/dpi/0.77))
+        plt.imshow(img)
+        plt.axis('off')
+        if latest_coords is not None:
+            show_points(plt.gca(), [latest_coords], args.point_labels,
+                        size=(width*0.04)**2)
+        plt.savefig(img_points_p, bbox_inches='tight', pad_inches=0)
+        show_mask(plt.gca(), mask, random_color=False)
+        plt.savefig(img_mask_p, bbox_inches='tight', pad_inches=0)
+        plt.close()
+
+    # fill the masked image
+    for idx, mask in enumerate(masks):
+        if args.seed is not None:
+            torch.manual_seed(args.seed)
+        mask_p = out_dir / f"mask_{idx}.png"
+        img_replaced_p = out_dir / f"replaced_with_{Path(mask_p).name}"
+        img_replaced = replace_img_with_sd(
+            img, mask, args.text_prompt, device=device, model_id=args.sd_model)
+        save_array_to_img(img_replaced, img_replaced_p)

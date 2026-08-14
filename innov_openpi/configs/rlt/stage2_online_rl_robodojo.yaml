@@ -1,0 +1,83 @@
+# Stage 2: Online RL Training — RoboDojo 仿真版
+# ==========================================
+# 在 RoboDojo (Isaac Sim) 仿真上跑在线 RL:RoboDojoEnv 自动拉起
+# robodojo_sim_server.py 子进程(需指定 RoboDojo 环境的 python),奖励来自
+# task 的 reward_manager(binary success)。
+#
+# 用法:
+#   python scripts/train_online_rl.py --config configs/rlt/stage2_online_rl_robodojo.yaml
+#
+# env.extra 中的参数也可用 ROBODOJO_* 环境变量覆盖(如 ROBODOJO_TASK_NAME)。
+# 任务列表见 RoboDojo/task/RoboDojo/config/_task.yml(37 个注册任务)。
+
+# ── Action Space ────────────────────────────────────────
+action_dim: 14            # RoboDojo dual_x5 双臂 14-DOF(joint 绝对目标)
+chunk_length: 10
+vla_action_horizon: 50
+max_env_steps: 10000000000
+critical_phase_only: false
+obs_stride: 2
+async_collection: true
+
+# ── Actor-Critic Architecture ────────────────────────────
+rl_arch:
+  embedding_dim: 2048
+  mlp_hidden_dim: 256
+  mlp_num_hidden_layers: 2
+  actor_noise_sigma: 0.1
+  ref_action_dropout: 0.5
+
+# ── TD3 Hyperparameters ──────────────────────────────────
+td3:
+  gamma: 0.99
+  tau: 0.005
+  utd_ratio: 5
+  bc_regularizer_beta: 0.5
+  critic_updates_per_actor: 2
+  target_noise_sigma: 0.2
+  target_noise_clip: 0.5
+
+# ── Optimizer ────────────────────────────────────────────
+optimizer:
+  actor_lr: 3.0e-4
+  critic_lr: 3.0e-4
+
+# ── Replay Buffer ────────────────────────────────────────
+buffer:
+  capacity: 100000
+  batch_size: 256
+  warmup_steps: 1000
+
+# ── Environment (RoboDojo 仿真) ─────────────────────────
+env:
+  env_factory: rlt.rollout.robodojo_env.make_robodojo_env
+  intervention_factory: ""          # 仿真奖励自动判定,无需人工干预
+  task_prompt: ""                   # 空 = 用 task 自带的 instruction
+  max_episode_chunks: 150
+  extra:
+    root: /home/kemove/INNOV/sim/RoboDojo      # RoboDojo 仓库根目录
+    python: /path/to/robodojo_env/bin/python   # TODO: RoboDojo/Isaac Sim 环境解释器
+    task_name: stack_blocks                     # 指定 task(见 _task.yml)
+    env_cfg_type: arx_x5
+    seed: 0                                     # eval layout 种子目录
+    device_id: "1"                              # sim 用 GPU(VLA 用另一张)
+    # camera_map: {front: cam_head, left_wrist: cam_left_wrist, right_wrist: cam_right_wrist}
+    # startup_timeout: 900
+
+# ── Checkpoints ──────────────────────────────────────────
+checkpoint:
+  rl_token_checkpoint: ""          # Stage 1 产物 rl_token_step*.pt(必填,RoboDojo 数据重训)
+  vla_checkpoint_dir: ""           # SFT 产物(必填,RoboDojo 数据重训)
+  vla_config_name: ""
+  resume_checkpoint: ""
+  warmup_buffer: ""
+  save_dir: checkpoints/online_rl
+  run_name: ""
+  save_every: 50
+  log_every: 1
+  print_every: 100
+
+# ── wandb ────────────────────────────────────────────────
+wandb:
+  project: rlt-openpi
+  enabled: false

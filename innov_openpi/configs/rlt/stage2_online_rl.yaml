@@ -1,0 +1,80 @@
+# Stage 2: Online RL Training (Algorithm 1)
+# ==========================================
+# Runs the online RL loop: VLA → RL Token → Actor → Environment
+# using TD3 with twin Q-critics and BC regularization.
+#
+# Usage (innov_arm 真机直接控制,单进程;串口/相机走环境变量):
+#   export INNOV_ARM_ROBOT_TYPE=bi_innov_arm_v1
+#   export INNOV_ARM_LEFT_PORT=/dev/ttyACM1      # 双臂左臂串口
+#   export INNOV_ARM_RIGHT_PORT=/dev/ttyACM0     # 双臂右臂串口
+#   export INNOV_ARM_CAMERAS='{"front": {"type": "intelrealsense", "serial_number_or_name": "135122077817", "width": 848, "height": 480, "fps": 30}, "front_1": {"type": "intelrealsense", "serial_number_or_name": "236522071363", "width": 848, "height": 480, "fps": 30}, "left_wrist": {"type": "intelrealsense", "serial_number_or_name": "260522274272", "width": 640, "height": 480, "fps": 30}, "right_wrist": {"type": "intelrealsense", "serial_number_or_name": "260422275543", "width": 640, "height": 480, "fps": 30}}'
+#   # front 在 get_obs 内与 front_1 垂直拼接(与采集一致),env 输出键 = 数据集键 front/left_wrist/right_wrist
+#   # 单臂:INNOV_ARM_ROBOT_TYPE=innov_arm_v1 + INNOV_ARM_PORT,action_dim 改 7
+#   python scripts/train_online_rl.py --config configs/rlt/stage2_online_rl.yaml
+#
+#   # CLI overrides (nested fields use dot notation):
+#   python scripts/train_online_rl.py --config configs/rlt/stage2_online_rl.yaml \
+#       --td3.gamma 0.95 --env.task-prompt "pick up the block"
+
+# ── Action Space ────────────────────────────────────────
+action_dim: 14             # 真机 innov_arm 双臂 14-DOF(bi_innov_arm_v1);单臂 7
+chunk_length: 10          # 论文 C=10(RL chunk)
+vla_action_horizon: 50    # 论文 H=50(VLA 参考采样)
+max_env_steps: 10000000000
+critical_phase_only: false  # true = 阶段 RL(episode 从 VLA 开始,按 t 切到 RL);false = 全局 RL
+obs_stride: 2               # stride 子采样(论文 stride=2;1 = 禁用)
+async_collection: true      # 异步 rollout/learning(论文异步双线程)
+
+# ── Actor-Critic Architecture ────────────────────────────
+rl_arch:
+  embedding_dim: 2048
+  mlp_hidden_dim: 256
+  mlp_num_hidden_layers: 2
+  actor_noise_sigma: 0.1
+  ref_action_dropout: 0.5
+
+# ── TD3 Hyperparameters ──────────────────────────────────
+td3:
+  gamma: 0.99
+  tau: 0.005
+  utd_ratio: 5
+  bc_regularizer_beta: 0.5
+  critic_updates_per_actor: 2
+  target_noise_sigma: 0.2
+  target_noise_clip: 0.5
+
+# ── Optimizer ────────────────────────────────────────────
+optimizer:
+  actor_lr: 3.0e-4
+  critic_lr: 3.0e-4
+
+# ── Replay Buffer ────────────────────────────────────────
+buffer:
+  capacity: 100000
+  batch_size: 256
+  warmup_steps: 1000
+
+# ── Environment (innov_arm 真机) ─────────────────────────
+env:
+  env_factory: rlt.rollout.innov_arm_env.make_innov_arm_env
+  intervention_factory: rlt.rollout.innov_arm_env.make_body_teaching_intervention
+  task_prompt: "Put the water flosser into the box and close the lid"
+  max_episode_chunks: 150  # 单 episode 最大 chunk 数(超时强制终止)
+
+# ── Checkpoints ──────────────────────────────────────────
+checkpoint:
+  rl_token_checkpoint: ""          # Stage 1 产物 rl_token_step*.pt(必填)
+  vla_checkpoint_dir: ""           # SFT 产物 checkpoints/innov_arm_sft_001/<step>(必填)
+  vla_config_name: configs/innov_arm/pi05_finetune_innov_arm.yaml  # 真机 SFT 配置(camera_map/norm stats)
+  resume_checkpoint: ""
+  warmup_buffer: "checkpoints/online_rl/warmup_buffer.pt"
+  save_dir: checkpoints/online_rl
+  run_name: ""
+  save_every: 50
+  log_every: 1
+  print_every: 100
+
+# ── wandb ────────────────────────────────────────────────
+wandb:
+  project: rlt-openpi
+  enabled: false

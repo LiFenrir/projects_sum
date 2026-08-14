@@ -1,0 +1,42 @@
+# Datasets
+s1_data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+.env
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+
+# Claude
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+#data
+outputs/
+output/
+s1_data*/
+
+#codegraph
+.codegraph
+
+# Project docs (local planning, not versioned)
+docs/

@@ -1,0 +1,20 @@
+# ReCap Compute Returns Configuration
+# Usage: python scripts/recap/compute_returns.py --config configs/recap/recap_compute_returns.yaml
+
+data:
+  data_root: null
+
+  # List of datasets to process
+  train_data_paths:
+    - dataset_path: /path/to/sft_dataset
+      type: sft
+    - dataset_path: /path/to/rollout_dataset
+      type: rollout
+
+  dataset_type: "sft"
+  gamma: 1.0
+  failure_reward: -300.0
+
+  # Saves to meta/returns_{tag}.parquet
+  tag: null
+  num_workers: 128
