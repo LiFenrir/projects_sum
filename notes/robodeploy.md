@@ -65,12 +65,8 @@ source .venv/bin/activate
 uv pip install -e .
 ```
 
-- 硬件驱动(Feetech/Dynamixel 舵机、RealSense 相机、PyQt6)全部随主包安装
-- `torchcodec` 在 Windows/ARM Linux/macOS x86_64 不可用属正常
 
 ## 功能使用
-
-以下示例均以 Innov Arm 为例(串口,端口格式 `/dev/ttyACM0`,注册类型 `innov_arm_v1` / 双臂 `bi_innov_arm_v1`)。
 
 ### 串口与相机查找
 
@@ -79,33 +75,40 @@ python -m robodeploy.find_port        # 列出串口设备,插拔一下定位机
 python -m robodeploy.find_cameras     # 枚举可用相机并预览
 ```
 
-### 数据采集(record_dataset,30fps 控制环)
+### 数据采集(30fps 控制环)
+
+采集脚本分两个版本:
+
+- **主从臂版 `record_dataset.py`** — S1 等 leader-follower 体系,follower 机器人 + leader 遥操设备(`--robot.type` + `--teleop.type`)
+- **复合夹爪版 `record_body_teaching.py`** — Innov Arm / ARX X5 等,本体示教(重力补偿手把手拖动),无独立 teleoperator,机器人自身提供 `get_action()`;支持 RTC(`--use_rtc`)替代 StreamBuffer
 
 ```bash
-# 本体示教采集(单臂,mode=collect:重力补偿,手把手拖动示教,无需主臂)
+# S1 双臂主从采集(主从臂版)
 python -m robodeploy.scripts.record_dataset \
-    --robot.type=innov_arm_v1 --robot.port=/dev/ttyACM0 --robot.mode=collect \
+    --robot.type=bi_s1_follower --robot.left_arm_port=/dev/ttyUSB0 --robot.right_arm_port=/dev/ttyUSB1 \
+    --teleop.type=bi_s1_leader --teleop.left_arm_port=/dev/ttyUSB2 --teleop.right_arm_port=/dev/ttyUSB3 \
     --control_mode teleop --task="pick and place"
 
-# 双臂本体示教
-python -m robodeploy.scripts.record_dataset \
+# Innov Arm 双臂本体示教(复合夹爪版,mode=collect,无需主臂)
+python -m robodeploy.scripts.record_body_teaching \
     --robot.type=bi_innov_arm_v1 \
     --robot.left_port=/dev/ttyACM0 --robot.right_port=/dev/ttyACM1 --robot.mode=collect \
-    --control_mode teleop --task="pick and place"
+    --task="pick and place"
 
-# 纯策略推理部署(mode=control:位置控制)
-python -m robodeploy.scripts.record_dataset \
+# Innov Arm 策略推理部署(mode=control:位置控制)
+python -m robodeploy.scripts.record_body_teaching \
     --robot.type=innov_arm_v1 --robot.port=/dev/ttyACM0 --robot.mode=control \
-    --control_mode policy --policy.type=openpi --policy.host=localhost --policy.port=8000 \
+    --policy.type=openpi --policy.host=localhost --policy.port=8000 \
     --task="pick and place"
 
 # mixed 模式:mode=collect + policy 参数,运行中按 P 键热切换(DAgger 式纠偏)
 ```
 
-每 tick 三阶段:`robot.get_obs()` → 读示教位置(teleop)或 `stream_buffer.pop_next_action()`(policy) → `send_action` + `dataset.add_frame`。
+每 tick 三阶段:`robot.get_obs()` → 读示教位置(teleop/本体)或 `stream_buffer.pop_next_action()`(policy) → `send_action` + `dataset.add_frame`。
 
 - mixed 模式 policy→teleop 切换时 `interpolate_leader_to_follower()` cosine 混频平滑
 - **StreamActionBuffer**(`utils/stream_buffer.py`):重叠 action chunk 线性交叉淡入淡出;调参 `latency_k`、`min_smooth_steps`
+- 复合夹爪版额外支持:`--use_rtc`(RTC 收发驱动,`rtc_execution_horizon`)、`warmup_rounds` 推理预热、`action_smooth_max_step` 单步限幅
 
 ### 数据集后端
 
