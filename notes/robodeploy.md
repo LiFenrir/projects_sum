@@ -19,7 +19,7 @@ robodeploy 的思路是**做减法**:fork LeRobot 后砍掉训练与模型库,�
 
 - **多机器人支持** — S1(单/双臂)、Innov Arm、ARX X5 等
 - **多模式数据采集** — teleop(纯遥操作)/ policy(纯推理)/ mixed(P 键热切换,DAgger 式纠偏)
-- **策略推理接入** — OpenPI WebSocket 客户端,action chunk 时序平滑
+- **策略推理接入** — OpenPI WebSocket 客户端,action chunk 时序平滑(server 侧联合部署见 [[innov-openpi#与 robodeploy 联合部署]])
 - **相机集成** — OpenCV USB 相机、Intel RealSense 深度相机
 - **双前端** — WebUI(FastAPI,远程监控)与 Qt 桌面 UI(相机调试/采集/数据检查/部署四 tab)
 
@@ -108,7 +108,65 @@ python -m robodeploy.scripts.record_body_teaching \
 
 - mixed 模式 policy→teleop 切换时 `interpolate_leader_to_follower()` cosine 混频平滑
 - **StreamActionBuffer**(`utils/stream_buffer.py`):重叠 action chunk 线性交叉淡入淡出;调参 `latency_k`、`min_smooth_steps`
-- 复合夹爪版额外支持:`--use_rtc`(RTC 收发驱动,`rtc_execution_horizon`)、`warmup_rounds` 推理预热、`action_smooth_max_step` 单步限幅
+- 两版均支持:`--use_rtc`(RTC 收发驱动,`rtc_execution_horizon`)、`warmup_rounds` 推理预热、`action_smooth_max_step` 单步限幅
+
+#### 按键操作(两版相同)
+
+控制指令有两种等价入口:**终端按键**或**前端按钮**(WebUI 网页 / Qt 界面,内部走同一 `pending_ref` 命令通道,主循环同步执行):
+
+| 终端按键 | WebUI/Qt 按钮 | 功能 |
+| --- | --- | --- |
+| `Enter` | — | 启动控制环 |
+| `R` | 录制开关 | 开始/停止录制当前 episode |
+| `S` | 保存(带 label) | 结束并保存 episode,随后标注:`1` 成功 / `0` 失败 / `2` 丢弃(写入 `is_failure_data`) |
+| `P` / `Tab` | 模式切换 | mixed 模式热切换 示教 ↔ 推理(DAgger 纠偏;固定模式无效) |
+| `Z` | 回零 | 机械臂回零位(录制中不可用) |
+| `Esc` / `Ctrl+C` | 停止 | 退出 |
+
+episode 达到 `--episode_time_s` 自动停止录制并弹出标注提示。主从臂版 P 切回 teleop 时 leader 余弦插值对齐 follower;复合夹爪版 P 切换时同步切硬件模式(`set_mode("collect")` 重力补偿 ↔ `set_mode("control")` 位置控制)。注意复合夹爪版仅支持键盘 + WebUI,无 Qt 前端。
+
+### DAgger(mixed 模式)
+
+robodeploy 的 DAgger 即采集脚本的 mixed 模式(`--control_mode mixed`):策略自己开,人盯场,跑偏时按 `P` 一键接管纠偏,纠偏段一并录制,聚合重训——训练分布覆盖策略实际访问的状态(含犯错后的恢复轨迹),缓解协变量偏移。
+
+机制要点(逻辑在 `record_loop()`):
+
+- **热切换**:P/Tab 或前端按钮即时切 示教 ↔ 推理,不停录制、不重启进程;初始模式由 `--control_mode_initial` 决定
+- **切换平滑**:主从臂版 policy→teleop 时 `interpolate_leader_to_follower()` 把 leader 余弦插值对齐 follower;复合夹爪版直接切硬件 collect/control 模式;两版切换时均清空 StreamActionBuffer/ActionQueue,防止执行残留 chunk
+- **逐帧来源标注**:`is_infer_data` 1=策略动作 / 0=人工动作,训练端可筛选加权;配合 `is_failure_data` 保存标注
+- **推理与录制耦合**:推理线程仅在 recording=ON 且 mode=POLICY 时请求 server——策略跑的过程本身就是在采集;一次会话同时产出策略成功段、人工纠偏段、失败段,正好是一轮 DAgger 迭代所需的全部数据
+
+```bash
+python -m robodeploy.scripts.record_dataset \
+    --robot.type=bi_s1_follower --teleop.type=bi_s1_leader \
+    --policy.type=openpi --policy.host=localhost --policy.port=8000 \
+    --control_mode mixed --control_mode_initial policy \
+    --task="pick and place"
+```
+
+### 便捷启动脚本(examples/)
+
+`examples/` 按机型把长串 draccus 命令封装成 shell 脚本:`s1/`(record_dataset.sh / record_dataset_rtc.sh / rlt_bridge.sh)、`arx/`(record_arx_bimanual.sh)、`innov/`(record_innov.sh / inference.sh + 归零/主从/关节极值等工具)。日常采集复制对应机型脚本改头部变量即可,不用手敲 `python -m robodeploy.scripts.xxx`。
+
+以 `examples/innov/record_innov.sh` 为例,脚本结构三段式:
+
+**① 快速配置区(文件头部,唯一需要改的部分)**:
+
+```bash
+ROBOT_TYPE="bi_innov_arm_v1"
+LEFT_PORT="/dev/ttyACM1"  RIGHT_PORT="/dev/ttyACM0"
+ROBOT_MODE="control"          # collect=重力补偿示教  control=位置控制(推理时用)
+OPENPI_HOST="192.168.200.203" OPENPI_PORT=8000
+CAMERA_CONFIG='{"front":{"type":"intelrealsense","serial_number_or_name":"135122077817",...}, ...}'  # 严格 JSON,RealSense 按序列号
+REPO_ID="innov/innov_$(date +%m%d_%H%M)"   # 自动带时间戳
+TASK="${TASK:-...}"           # 支持环境变量覆盖:TASK="xxx" bash record_innov.sh
+USE_RTC=true  RTC_EXECUTION_HORIZON=15  WARMUP_ROUNDS=10
+USE_TEMPORAL_SMOOTHING=true  INFERENCE_RATE=5.0  LATENCY_K=16  MIN_SMOOTH_STEPS=8  # 仅非 RTC 生效,附整定注释
+```
+
+**② 交互流程**:`sudo chmod 777` 串口授权 → 菜单选控制模式(1 collect 纯示教 / 2 policy 纯推理 / 3 mixed P 键切换)→ 打印完整配置表 → Enter 确认启动。选 collect 时自动裁掉 policy/RTC 参数;RTC 开启时自动关 StreamBuffer(`--use_temporal_smoothing false`),两者互斥。
+
+**③ 最终拼装**:配置区变量翻译成 draccus 参数(`--robot.left_port`、`--policy.host`、`--use_rtc`…)调 `record_body_teaching.py`,并提示当前模式可用按键(mixed 多一个 P)。
 
 ### 数据集后端
 

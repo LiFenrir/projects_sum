@@ -9,8 +9,7 @@
 - **多模式数据采集** — 纯遥操作、纯策略推理、混合模式（P 键热切换）
 - **摄像头集成** — OpenCV USB 摄像头、Intel RealSense 深度摄像头
 - **策略推理** — OpenPI WebSocket 客户端，支持时序平滑与 DAgger 对齐
-- **Web 管理界面** — Flask 实时监控与控制面板
-- **ROS 部署** — Piper 机器人 ROS noetic 部署脚本
+- **Web 管理界面** — FastAPI WebSocket 实时监控与控制面板
 
 ## 项目结构
 
@@ -18,7 +17,6 @@
 robodeploy/
 ├── src/robodeploy/         # 核心包：cameras, datasets, motors, robots, teleoperators, webui, scripts
 ├── scripts/                   # 硬件部署/测试工具（回放、推理检查、RTC 冒烟测试）
-├── deploy/                    # 部署工具：piper_deploy.py, ROS launch, data_collection
 ├── examples/                  # 使用示例
 └── pyproject.toml             # 项目元数据与依赖配置
 ```
@@ -54,8 +52,22 @@ python -m robodeploy.webui           # 默认地址 http://localhost:5000
 
 ### 数据采集
 
+采集脚本分两个版本，均使用 NPY 存储后端（O(1) 内存），30fps 控制环：
+
+| | 主从臂版 `record_dataset.py` | 复合夹爪版 `record_body_teaching.py` |
+|---|---|---|
+| 适用机器人 | S1 等 leader-follower 体系 | Innov Arm / ARX X5（本体示教） |
+| 示教来源 | 独立 teleoperator（`--teleop.type`，leader 臂） | 无 teleop，机器人自带 `get_action()`，`--robot.mode=collect` 重力补偿下手把手拖动 |
+| 录制帧的 action | teleop 模式：leader 臂目标关节位置；policy 模式：推理动作 | collect 模式：本体当前位置（人拖动产生，state/action 同源）；policy 模式：推理动作 |
+| 控制模式 | `teleop` / `policy` / `mixed` | `collect` / `policy` / `mixed` |
+| P 键切换行为 | policy→teleop 时 `interpolate_leader_to_follower()` 把 leader 余弦插值对齐 follower，平滑接管 | 同时切换硬件模式：`set_mode("collect")` 开重力补偿 / `set_mode("control")` 位置控制 |
+| 推理输入预处理 | 夹爪二值化（关节索引 6/13，<0.2→0）；`front_1` 旋转 180° 后与 `front` 上下拼接 | 不二值化；`front_1` 不旋转直接拼接 |
+| 前端 | 键盘 / WebUI / Qt（`--front_end=qt`） | 键盘 / WebUI |
+
+两版录制帧均额外写入 `is_infer_data`（该帧动作是否来自策略推理）和 `is_failure_data`（由保存时的成功/失败标注决定）。
+
 ```bash
-# 双臂 S1 — 纯遥操作（NPY 存储，O(1) 内存）
+# 主从臂版：双臂 S1 — 纯遥操作
 python -m robodeploy.scripts.record_dataset \
     --robot.type=bi_s1_follower \
     --robot.left_arm_port=/dev/ttyUSB0 --robot.right_arm_port=/dev/ttyUSB1 \
@@ -64,14 +76,42 @@ python -m robodeploy.scripts.record_dataset \
     --control_mode teleop \
     --task="pick and place"
 
-# 混合模式 — 策略推理 + 遥操作（P 键切换）
+# 主从臂版：混合模式 — 策略推理 + 遥操作（P 键切换）
 python -m robodeploy.scripts.record_dataset \
     --robot.type=bi_s1_follower \
     --teleop.type=bi_s1_leader \
     --policy.type=openpi \
     --policy.host=localhost --policy.port=8000 \
     --task="pick and place"
+
+# 复合夹爪版：Innov Arm 双臂本体示教（mode=collect，无需主臂）
+python -m robodeploy.scripts.record_body_teaching \
+    --robot.type=bi_innov_arm_v1 \
+    --robot.left_port=/dev/ttyACM0 --robot.right_port=/dev/ttyACM1 \
+    --robot.mode=collect \
+    --task="pick and place"
+
+# 复合夹爪版：策略推理部署（mode=control 位置控制），支持 --use_rtc
+python -m robodeploy.scripts.record_body_teaching \
+    --robot.type=innov_arm_v1 --robot.port=/dev/ttyACM0 --robot.mode=control \
+    --policy.type=openpi --policy.host=localhost --policy.port=8000 \
+    --task="pick and place"
 ```
+
+#### 按键操作（两版相同）
+
+控制指令有两种等价入口：**终端按键**或**前端按钮**（WebUI 网页 / Qt 界面，内部走同一命令通道，主循环同步执行）：
+
+| 终端按键 | WebUI/Qt 按钮 | 功能 |
+|---|---|---|
+| `Enter` | — | 启动控制环 |
+| `R` | 录制开关 | 开始 / 停止录制当前 episode |
+| `S` | 保存（带 label） | 结束并保存 episode，随后标注：`1` 成功 / `0` 失败 / `2` 丢弃 |
+| `P` 或 `Tab` | 模式切换 | mixed 模式下热切换 示教 ↔ 推理（DAgger 式纠偏；固定模式下无效） |
+| `Z` | 回零 | 机械臂回零位（录制中不可用） |
+| `Esc` / `Ctrl+C` | 停止 | 退出 |
+
+episode 达到 `--episode_time_s` 时长后自动停止录制并弹出成功/失败标注提示。注意复合夹爪版仅支持键盘 + WebUI，无 Qt 前端。
 
 详情见 [scripts/README.md](scripts/README.md)。
 
@@ -83,7 +123,7 @@ python -m robodeploy.scripts.record_dataset \
 | 机器学习 | PyTorch, HuggingFace datasets & hub |
 | 视觉 | OpenCV, Intel RealSense |
 | 配置 | draccus（数据类驱动的 CLI 解析） |
-| Web 界面 | Flask + FastAPI / uvicorn |
+| Web 界面 | FastAPI / uvicorn |
 | 视频编码 | PyAV (av) |
 | 串口通信 | pyserial, Dynamixel SDK, Feetech SDK |
 | 策略推理 | OpenPI WebSocket 客户端, msgpack |

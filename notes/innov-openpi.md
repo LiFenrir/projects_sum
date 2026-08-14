@@ -193,13 +193,52 @@ python scripts/recap/compute_advantages.py --config configs/recap/recap_compute_
 
 ```bash
 # WebSocket 策略服务器(供 robodeploy 连接)
-python scripts/serve_policy.py policy:checkpoint \
-    --policy.config=configs/bi_s1/pi05_inference.yaml --policy.dir=checkpoints/my_run/20000
+python scripts/serve_policy.py \
+    --config configs/bi_s1/pi05_finetune.yaml \
+    --dir checkpoints/my_run/20000 \
+    --port 8000
 
 # 开环评测
 python scripts/rollout_vla.py --vla-config-name configs/bi_s1/pi05_finetune.yaml \
     --vla-checkpoint-dir ... --env-factory ... --num-episodes 10
 ```
+
+`serve_policy.py` 参数(tyro CLI):
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `--config` | 见代码默认值 | 推理 YAML(复用训练配置,提供 camera_map / norm stats;`pi05_inference.yaml` 在仓库中不存在,直接用训练的 finetune yaml) |
+| `--dir` | **必填** | checkpoint 目录(含模型权重;norm stats 优先从其 `assets/` 加载) |
+| `--port` | `8000` | WebSocket 监听端口(host 固定 `0.0.0.0`) |
+| `--default-prompt` | 无 | 数据无 `prompt` 键时使用的默认任务指令 |
+| `--action-chunk` | `50` | 每次推理返回的动作步数(RTC 缓冲用) |
+| `--rtc` | 关 | 开启 RTC;客户端须按协议发送 `prev_chunk_left_over` / `inference_delay` / `execution_horizon` |
+| `--rtc-execution-horizon` | `13` | RTC 约束窗口(= smooth_window,引导重叠 + 客户端 blend 步数) |
+| `--record` | 关 | 录制策略行为到 `policy_records/` 便于调试 |
+
+### 与 robodeploy 联合部署
+
+策略服务(innov_openpi)与采集/部署端(robodeploy)通过 WebSocket 解耦,可分机器运行。**先启动 server(加载 checkpoint 较慢),再启动 robodeploy**:
+
+```bash
+# ① server 侧(innov_openpi 环境)
+python scripts/serve_policy.py \
+    --config configs/innov_arm/pi05_finetune_innov_arm.yaml \
+    --dir checkpoints/my_run/20000 \
+    --rtc --rtc-execution-horizon 13 --port 8000
+
+# ② client 侧(robodeploy 环境,同机则 host=localhost)
+python -m robodeploy.scripts.record_body_teaching \
+    --robot.type=innov_arm_v1 --robot.port=/dev/ttyACM0 --robot.mode=control \
+    --policy.type=openpi --policy.host=<server_ip> --policy.port=8000 \
+    --use_rtc --rtc_execution_horizon=13 \
+    --task="pick and place"
+```
+
+- **RTC 必须两端同时开启且 `execution_horizon` 一致**(server `--rtc` ↔ client `--use_rtc`);不开 RTC 时 robodeploy 回退 StreamActionBuffer 时序平滑(调参 `latency_k` / `min_smooth_steps` / `inference_rate`)
+- robodeploy 端 `--warmup_rounds`(默认 10)会先打几轮推理预热并计时,可借此确认链路连通与延迟
+- 数据格式互通由 `LeRobotInputs/Outputs` 完成:robodeploy 发送 state 向量 + 相机图像 + task,server 返回 action chunk;采集端 `camera_map` 需与训练时的相机键映射一致
+- mixed 模式(P 键热切换纠偏)与 policy 纯推理均走同一连接,切换时客户端清空动作队列,无需重启 server
 
 ## 关键注意
 
